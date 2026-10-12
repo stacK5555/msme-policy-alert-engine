@@ -5,8 +5,10 @@ import html
 import requests
 import feedparser
 from bs4 import BeautifulSoup
-from google import genai
-from google.genai import types
+
+# Commented out AI imports for debugging speed
+# from google import genai
+# from google.genai import types
 
 SEEN_FILE = "seen_ids.json"
 MAX_ENTRIES_PER_RUN = 8
@@ -40,51 +42,30 @@ def clean_html(raw_html):
     soup = BeautifulSoup(raw_html, "html.parser")
     return soup.get_text(separator=" ", strip=True)
 
-def analyze_and_summarize(client, title, summary, link):
-    safe_link = html.escape(link)
-    prompt = f"""
-You are an operational intelligence assistant for micro-enterprises and local metal craft suppliers (brass, steel, blade forging, and artisan tools) in Dehradun and the Garhwal belt of Uttarakhand.
+def build_direct_card(title, summary, link):
+    """
+    Constructs a direct Telegram card from raw RSS data without AI processing.
+    Escapes HTML entities to avoid Telegram parse errors.
+    """
+    safe_title = html.escape(title.strip())
+    safe_link = html.escape(link.strip())
+    
+    # Trim summary to ~250 characters for a clean preview
+    clean_text = summary.strip()
+    if len(clean_text) > 250:
+        clean_text = clean_text[:247] + "..."
+    safe_summary = html.escape(clean_text)
 
-Review the following news or policy release:
-Title: {title}
-Summary/Content: {summary}
+    card = (
+        f"📢 <b>{safe_title}</b>\n\n"
+        f"📝 {safe_summary}\n\n"
+        f"📍 <b>Link:</b> <a href=\"{safe_link}\">पूरी खबर पढ़ें (Read More)</a>"
+    )
+    return card
 
-INSTRUCTIONS:
-1. Determine if this contains actionable value for small manufacturing units, metal suppliers, raw material schemes (steel/brass subsidies, NSIC allotments), exhibitions, credit/grants, or artisan policies (e.g., PM Vishwakarma, ZED, Uttarakhand MSME Policy).
-2. If it is generic politics, unrelated corporate news, or completely irrelevant, output ONLY the single word: SKIP.
-3. If RELEVANT, write a clear, crisp, bilingual (Hindi + plain English) summary under 80 words using HTML formatting:
-
-📢 <b>नई सूचना / MSME Update:</b> [Crisp title in Hindi and English]
-🎯 <b>पात्रता / Eligibility:</b> [Who benefits, e.g., Metal fabricators, Udyam registered suppliers]
-💰 <b>लाभ / Direct Benefit:</b> [Subsidy %, financial grant, raw material assistance, or deadline]
-📍 <b>कहाँ संपर्क करें / Link:</b> <a href="{safe_link}">यहाँ क्लिक करें (Click Here)</a>
-"""
-    # Models to attempt with fallback
-    candidate_models = ["gemini-3.8-flash", "gemini-3.5-flash-lite"]
-
-    for model_name in candidate_models:
-        for attempt in range(2):
-            try:
-                response = client.models.generate_content(
-                    model=model_name,
-                    contents=prompt,
-                    config=types.GenerateContentConfig(
-                        temperature=0.2,
-                    )
-                )
-                output = response.text.strip()
-                if "SKIP" in output:
-                    return "SKIP"
-                return output
-            except Exception as e:
-                err_str = str(e)
-                print(f"Attempt {attempt + 1} with {model_name} failed: {err_str}")
-                if "503" in err_str or "UNAVAILABLE" in err_str:
-                    time.sleep(3)  # Brief wait on temporary server spikes
-                    continue
-                break  # If model is not found (404), fall back to next model immediately
-
-    return None
+# def analyze_and_summarize(client, title, summary, link):
+#     # Bypassed for now to debug RSS ingestion and Telegram delivery
+#     pass
 
 def send_telegram_message(bot_token, chat_id, text):
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
@@ -104,15 +85,14 @@ def send_telegram_message(bot_token, chat_id, text):
         return False
 
 def main():
-    gemini_key = os.environ.get("GEMINI_API_KEY")
+    # gemini_key = os.environ.get("GEMINI_API_KEY") # Bypassed temporarily
     bot_token = os.environ.get("TELEGRAM_BOT_TOKEN")
     chat_id = os.environ.get("TELEGRAM_CHAT_ID")
 
-    if not all([gemini_key, bot_token, chat_id]):
-        print("Missing required environment variables. Exiting.")
+    if not all([bot_token, chat_id]):
+        print("Missing required environment variables (TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID). Exiting.")
         return
 
-    client = genai.Client(api_key=gemini_key)
     seen_ids = load_seen_ids()
     new_seen_ids = set(seen_ids)
     processed_count = 0
@@ -131,24 +111,20 @@ def main():
             summary = clean_html(entry.get("summary", ""))
             link = entry.get("link", "")
 
-            print(f"Evaluating: {title[:60]}...")
-            card = analyze_and_summarize(client, title, summary, link)
+            print(f"Processing RSS item: {title[:60]}...")
+            
+            # Direct formatting without AI
+            card = build_direct_card(title, summary, link)
 
-            if card == "SKIP":
-                print("Irrelevant item, marked as skipped.")
+            success = send_telegram_message(bot_token, chat_id, card)
+            if success:
+                print(f"Posted alert for: {title[:50]}")
                 new_seen_ids.add(entry_id)
-            elif card:
-                success = send_telegram_message(bot_token, chat_id, card)
-                if success:
-                    print(f"Posted alert for: {title[:50]}")
-                    new_seen_ids.add(entry_id)
-                else:
-                    print(f"Telegram dispatch failed for: {title[:50]}. Will retry next run.")
             else:
-                print(f"API error occurred for: {title[:50]}. NOT marking as seen so it retries.")
+                print(f"Telegram dispatch failed for: {title[:50]}. Will retry next run.")
 
             processed_count += 1
-            time.sleep(2)
+            time.sleep(1) # Small throttle to avoid Telegram flood limits
 
             if processed_count >= MAX_ENTRIES_PER_RUN:
                 break
