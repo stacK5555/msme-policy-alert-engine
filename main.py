@@ -60,7 +60,7 @@ INSTRUCTIONS:
 """
     try:
         response = client.models.generate_content(
-            model="gemini-2.5-flash",
+            model="gemini-3.8-flash",
             contents=prompt,
             config=types.GenerateContentConfig(
                 temperature=0.2,
@@ -115,12 +115,15 @@ def main():
             print(f"Evaluating: {title[:60]}...")
             card = analyze_and_summarize(client, title, summary, link)
 
+            # If Gemini crashed (returns None due to API exception), do not mark as seen
+            # Only add to seen if it was successfully evaluated (card returned or cleanly SKIPPED)
             if card:
                 success = send_telegram_message(bot_token, chat_id, card)
                 if success:
                     print(f"Posted alert for: {title[:50]}")
             
             new_seen_ids.add(entry_id)
+            
             processed_count += 1
             time.sleep(1.5)  # Prevents hitting Gemini RPM limits
 
