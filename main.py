@@ -1,6 +1,7 @@
 import os
 import json
 import time
+import html
 import requests
 import feedparser
 from bs4 import BeautifulSoup
@@ -31,7 +32,6 @@ def load_seen_ids():
 
 def save_seen_ids(seen_ids):
     with open(SEEN_FILE, "w", encoding="utf-8") as f:
-        # Keep the latest 500 IDs to avoid indefinite file growth
         json.dump(list(seen_ids)[-500:], f, indent=2)
 
 def clean_html(raw_html):
@@ -41,6 +41,7 @@ def clean_html(raw_html):
     return soup.get_text(separator=" ", strip=True)
 
 def analyze_and_summarize(client, title, summary, link):
+    safe_link = html.escape(link)
     prompt = f"""
 You are an operational intelligence assistant for micro-enterprises and local metal craft suppliers (brass, steel, blade forging, and artisan tools) in Dehradun and the Garhwal belt of Uttarakhand.
 
@@ -56,23 +57,34 @@ INSTRUCTIONS:
 📢 <b>नई सूचना / MSME Update:</b> [Crisp title in Hindi and English]
 🎯 <b>पात्रता / Eligibility:</b> [Who benefits, e.g., Metal fabricators, Udyam registered suppliers]
 💰 <b>लाभ / Direct Benefit:</b> [Subsidy %, financial grant, raw material assistance, or deadline]
-📍 <b>कहाँ संपर्क करें / Link:</b> <a href="{link}">यहाँ क्लिक करें (Click Here)</a>
+📍 <b>कहाँ संपर्क करें / Link:</b> <a href="{safe_link}">यहाँ क्लिक करें (Click Here)</a>
 """
-    try:
-        response = client.models.generate_content(
-            model="gemini-3.8-flash",
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                temperature=0.2,
-            )
-        )
-        output = response.text.strip()
-        if "SKIP" in output:
-            return None
-        return output
-    except Exception as e:
-        print(f"Gemini API error: {e}")
-        return None
+    # Models to attempt with fallback
+    candidate_models = ["gemini-3.8-flash", "gemini-3.5-flash-lite"]
+
+    for model_name in candidate_models:
+        for attempt in range(2):
+            try:
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        temperature=0.2,
+                    )
+                )
+                output = response.text.strip()
+                if "SKIP" in output:
+                    return "SKIP"
+                return output
+            except Exception as e:
+                err_str = str(e)
+                print(f"Attempt {attempt + 1} with {model_name} failed: {err_str}")
+                if "503" in err_str or "UNAVAILABLE" in err_str:
+                    time.sleep(3)  # Brief wait on temporary server spikes
+                    continue
+                break  # If model is not found (404), fall back to next model immediately
+
+    return None
 
 def send_telegram_message(bot_token, chat_id, text):
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
@@ -82,10 +94,14 @@ def send_telegram_message(bot_token, chat_id, text):
         "parse_mode": "HTML",
         "disable_web_page_preview": False
     }
-    resp = requests.post(url, json=payload, timeout=10)
-    if resp.status_code != 200:
-        print(f"Telegram dispatch failed: {resp.text}")
-    return resp.status_code == 200
+    try:
+        resp = requests.post(url, json=payload, timeout=12)
+        if resp.status_code != 200:
+            print(f"Telegram dispatch failed: {resp.text}")
+        return resp.status_code == 200
+    except Exception as e:
+        print(f"Network error sending to Telegram: {e}")
+        return False
 
 def main():
     gemini_key = os.environ.get("GEMINI_API_KEY")
@@ -102,7 +118,10 @@ def main():
     processed_count = 0
 
     for feed_url in RSS_FEEDS:
-        feed = feedparser.parse(feed_url)
+        feed = feedparser.parse(
+            feed_url,
+            agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        )
         for entry in feed.entries:
             entry_id = entry.get("id", entry.get("link", ""))
             if not entry_id or entry_id in seen_ids:
@@ -115,17 +134,21 @@ def main():
             print(f"Evaluating: {title[:60]}...")
             card = analyze_and_summarize(client, title, summary, link)
 
-            # If Gemini crashed (returns None due to API exception), do not mark as seen
-            # Only add to seen if it was successfully evaluated (card returned or cleanly SKIPPED)
-            if card:
+            if card == "SKIP":
+                print("Irrelevant item, marked as skipped.")
+                new_seen_ids.add(entry_id)
+            elif card:
                 success = send_telegram_message(bot_token, chat_id, card)
                 if success:
                     print(f"Posted alert for: {title[:50]}")
-            
-            new_seen_ids.add(entry_id)
-            
+                    new_seen_ids.add(entry_id)
+                else:
+                    print(f"Telegram dispatch failed for: {title[:50]}. Will retry next run.")
+            else:
+                print(f"API error occurred for: {title[:50]}. NOT marking as seen so it retries.")
+
             processed_count += 1
-            time.sleep(1.5)  # Prevents hitting Gemini RPM limits
+            time.sleep(2)
 
             if processed_count >= MAX_ENTRIES_PER_RUN:
                 break
