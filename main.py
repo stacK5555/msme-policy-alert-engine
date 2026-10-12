@@ -1,5 +1,6 @@
 import os
 import json
+import time
 import requests
 import feedparser
 from bs4 import BeautifulSoup
@@ -9,7 +10,7 @@ from google.genai import types
 SEEN_FILE = "seen_ids.json"
 MAX_ENTRIES_PER_RUN = 8
 
-# Target RSS Sources (Google Alerts RSS & Government/PIB MSME Feeds)
+# Target RSS Sources (Google Alerts RSS & Google News Search Feeds)
 RSS_FEEDS = [
     "https://www.google.co.in/alerts/feeds/06169290745594020619/10383313577258338801",
     "https://www.google.co.in/alerts/feeds/06169290745594020619/989677120796858698",
@@ -30,7 +31,7 @@ def load_seen_ids():
 
 def save_seen_ids(seen_ids):
     with open(SEEN_FILE, "w", encoding="utf-8") as f:
-        # Keep the latest 500 IDs to avoid indefinite growth
+        # Keep the latest 500 IDs to avoid indefinite file growth
         json.dump(list(seen_ids)[-500:], f, indent=2)
 
 def clean_html(raw_html):
@@ -46,17 +47,16 @@ You are an operational intelligence assistant for micro-enterprises and local me
 Review the following news or policy release:
 Title: {title}
 Summary/Content: {summary}
-Source Link: {link}
 
 INSTRUCTIONS:
 1. Determine if this contains actionable value for small manufacturing units, metal suppliers, raw material schemes (steel/brass subsidies, NSIC allotments), exhibitions, credit/grants, or artisan policies (e.g., PM Vishwakarma, ZED, Uttarakhand MSME Policy).
 2. If it is generic politics, unrelated corporate news, or completely irrelevant, output ONLY the single word: SKIP.
-3. If RELEVANT, write a clear, crisp, bilingual (Hindi + plain English) telegram-ready summary under 80 words in this exact format:
+3. If RELEVANT, write a clear, crisp, bilingual (Hindi + plain English) summary under 80 words using HTML formatting:
 
-📢 *नई सूचना / MSME Update:* [Crisp title in Hindi and English]
-🎯 *पात्रता / Eligibility:* [Who benefits, e.g., Metal fabricators, Udyam registered suppliers]
-💰 *लाभ / Direct Benefit:* [Subsidy %, financial grant, raw material assistance, or date]
-📍 *कहाँ संपर्क करें / Link:* {link}
+📢 <b>नई सूचना / MSME Update:</b> [Crisp title in Hindi and English]
+🎯 <b>पात्रता / Eligibility:</b> [Who benefits, e.g., Metal fabricators, Udyam registered suppliers]
+💰 <b>लाभ / Direct Benefit:</b> [Subsidy %, financial grant, raw material assistance, or deadline]
+📍 <b>कहाँ संपर्क करें / Link:</b> <a href="{link}">यहाँ क्लिक करें (Click Here)</a>
 """
     try:
         response = client.models.generate_content(
@@ -79,10 +79,12 @@ def send_telegram_message(bot_token, chat_id, text):
     payload = {
         "chat_id": chat_id,
         "text": text,
-        "parse_mode": "Markdown",
+        "parse_mode": "HTML",
         "disable_web_page_preview": False
     }
     resp = requests.post(url, json=payload, timeout=10)
+    if resp.status_code != 200:
+        print(f"Telegram dispatch failed: {resp.text}")
     return resp.status_code == 200
 
 def main():
@@ -120,6 +122,8 @@ def main():
             
             new_seen_ids.add(entry_id)
             processed_count += 1
+            time.sleep(1.5)  # Prevents hitting Gemini RPM limits
+
             if processed_count >= MAX_ENTRIES_PER_RUN:
                 break
 
@@ -127,7 +131,7 @@ def main():
             break
 
     save_seen_ids(new_seen_ids)
-    print(f"Run complete. Checked feeds, updated seen_ids.")
+    print("Run complete. Checked feeds and updated seen_ids.")
 
 if __name__ == "__main__":
     main()
