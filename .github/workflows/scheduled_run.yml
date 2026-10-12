@@ -1,0 +1,42 @@
+name: Run MSME Policy Dispatcher
+
+on:
+  schedule:
+    # 04:00 UTC = 09:30 AM IST, 12:00 UTC = 05:30 PM IST
+    - cron: '0 4,12 * * *'
+  workflow_dispatch: # Allows manual trigger from GitHub UI for testing
+
+jobs:
+  scrape-and-dispatch:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write # Needed to commit seen_ids.json back to repo
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run Alert Engine
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python main.py
+
+      - name: Commit Updated Seen IDs
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "Automated: update processed policy IDs [skip ci]"
+          file_pattern: "seen_ids.json"
