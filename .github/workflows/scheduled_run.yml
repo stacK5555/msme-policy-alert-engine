@@ -2,8 +2,10 @@ name: Run MSME Policy Dispatcher
 
 on:
   schedule:
-    # 04:00 UTC = 09:30 AM IST, 12:00 UTC = 05:30 PM IST
-    - cron: '0 4,12 * * *'
+    # 03:45 UTC = 09:15 AM IST (Off-peak minute avoids queue stalls)
+    - cron: '45 3 * * *'
+    # 11:45 UTC = 05:15 PM IST
+    - cron: '45 11 * * *'
   workflow_dispatch: # Allows manual trigger from GitHub UI for testing
 
 jobs:
